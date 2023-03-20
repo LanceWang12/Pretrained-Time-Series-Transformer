@@ -60,4 +60,3 @@ class SPCAnomalyDataset(TSAnomalyDataset):
         else:
             x, y = super().__getitem__(idx)
             return x, spc, y
-
