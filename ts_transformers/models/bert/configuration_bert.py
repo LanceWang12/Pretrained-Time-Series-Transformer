@@ -12,6 +12,7 @@ class AnomalyBertConfig(BertConfig):
         mean_lr=0.00001,
         gate_lr=0.001,
         scale_lr=0.00001,
+        k=3,
         ** kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -24,3 +25,4 @@ class AnomalyBertConfig(BertConfig):
         self.mean_lr = mean_lr
         self.gate_lr = gate_lr
         self.scale_lr = scale_lr
+        self.k = k
