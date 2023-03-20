@@ -10,18 +10,18 @@ import torch.nn as nn
 import torch.optim as optim
 
 # -------- My Lib ---------
-from ts_transformers.models.bert import AnomalyBert, AnomalyBertConfig
-from ts_transformers.models.ckpt import EarlyStopping
 from ts_transformers.models import TSRunner
 from ts_transformers.data import SPCAnomalyConfig
+from ts_transformers.models.ckpt import EarlyStopping
 from ts_transformers.data import load_data, fix_seed, get_loader
+from ts_transformers.models.bert import AnomalyBert, AnomalyBertConfig
 
 
 def parse() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument('--load', type=str, default=None)
     parser.add_argument('--epochs', type=int, default=500)
-    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--lr', type=float, default=2e-5)
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--trainable', action='store_true', default=True)
@@ -36,7 +36,7 @@ def parse() -> argparse.Namespace:
 
     # -------- hyperparameter for SPCBERT --------
     parser.add_argument('--model_name', type=str, default="SPCBERT")
-    parser.add_argument('--seq_len', type=int, default=256)
+    parser.add_argument('--seq_len', type=int, default=128)
     parser.add_argument('--input_dim', type=int, default=38)
     parser.add_argument('--num_hidden_layers', type=int, default=3)
     parser.add_argument('--num_attention_heads', type=int, default=8)
@@ -45,6 +45,7 @@ def parse() -> argparse.Namespace:
     parser.add_argument('--hidden_dropout_prob', type=int, default=0.1)
     parser.add_argument('--output_attention', type=int, default=1)
     parser.add_argument('--norm', type=int, default=1)
+    parser.add_argument('--k', type=int, default=3)
     args = parser.parse_args()
     print('=' * 70)
     for key, value in vars(args).items():
@@ -84,6 +85,7 @@ def main() -> None:
         max_position_embeddings=args.seq_len,
         output_attention=args.output_attention,
         norm=args.norm,
+        k=args.k,
     )
     net = AnomalyBert(model_config)
 
@@ -91,7 +93,7 @@ def main() -> None:
         net.load_state_dict(torch.load(args.load))
 
     optimizer = optim.Adam(net.parameters(), lr=args.lr)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.MSELoss()
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=100, eta_min=1e-7)
 
@@ -99,10 +101,10 @@ def main() -> None:
     os.makedirs(ckpt_path, exist_ok=True)
     model_ckpt = [
         EarlyStopping(
+            path=ckpt_path + f"{args.model_name}_{args.task}_ckpt.pt",
             patience=args.patience,
             verbose=True,
-            delta=args.delta,
-            path=ckpt_path + f"{args.model_name}_ckpt.pt"
+            delta=args.delta
         )
     ]
 
