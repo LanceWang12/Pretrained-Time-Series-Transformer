@@ -131,3 +131,5 @@ dmypy.json
 # data
 *.csv
 *.xlsx
+*.txt
+*.pt

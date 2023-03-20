@@ -11,14 +11,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from .bert import AnomalyBertConfig
 
-def fix_seed(seed: int = 0) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    cuda.manual_seed_all(seed)
-    cudnn.benchmark = False
-    cudnn.deterministic = True
-
 
 class ProgressBar:
     last_length = 0
@@ -125,6 +117,7 @@ class _BaseRunner:
     def weights(self) -> None:
         raise NotImplementedError('weights not implemented')
 
+
 class TSRunner(_BaseRunner):
     def __init__(
         self,
@@ -164,15 +157,17 @@ class TSRunner(_BaseRunner):
 
         self.history.log('count', y.shape[0])
         self.history.log('loss', running_loss)
-        self.history.log('correct', int(torch.sum(y_hat == y.squeeze()).item()))
+        self.history.log('correct', int(
+            torch.sum(y_hat == y.squeeze()).item()))
 
         return running_loss
 
-    def train(self, epochs: int, train_loader: DataLoader, valid_loader: Optional[DataLoader] = None, scheduler: Any = None) -> None:
+    def train(self, epochs: int, train_loader: DataLoader,
+              valid_loader: Optional[DataLoader] = None, scheduler: Any = None) -> None:
         epoch_length = len(str(epochs))
         for epoch in range(epochs):
             self.net.train()
-            for i, (x, x_mask, sentence_id, y) in enumerate(train_loader):
+            for i, (x, spc, y) in enumerate(train_loader):
                 running_loss = self._step(x, y)
 
                 self.optimizer.zero_grad()
@@ -189,7 +184,8 @@ class TSRunner(_BaseRunner):
 
             prefix = f'Epochs: {(epoch + 1):>{epoch_length}} / {epochs}'
             postfix = str(self.history)
-            ProgressBar.show(prefix, postfix, len(train_loader), len(train_loader), newline=True)
+            ProgressBar.show(prefix, postfix, len(train_loader),
+                             len(train_loader), newline=True)
 
             self.history.reset()
 
@@ -205,7 +201,7 @@ class TSRunner(_BaseRunner):
     def val(self, test_loader: DataLoader) -> None:
         self.net.eval()
         flag = True
-        for i, (x, x_mask, sentence_id, y) in enumerate(test_loader):
+        for i, (x, spc, y) in enumerate(test_loader):
             running_loss = self._step(x, y)
             prefix = 'Val'
             postfix = str(self.history)
@@ -215,7 +211,8 @@ class TSRunner(_BaseRunner):
 
         prefix = 'Val'
         postfix = str(self.history)
-        ProgressBar.show(prefix, postfix, len(test_loader), len(test_loader), newline=True)
+        ProgressBar.show(prefix, postfix, len(test_loader),
+                         len(test_loader), newline=True)
 
         if self.model_ckpt is not None:
             flag = self.model_ckpt(self.history[-1]['loss'], self.net)
@@ -227,7 +224,7 @@ class TSRunner(_BaseRunner):
     def test(self, test_loader: DataLoader) -> None:
         self.net.eval()
 
-        for i, (x, x_mask, sentence_id, y) in enumerate(test_loader):
+        for i, (x, spc, y) in enumerate(test_loader):
             running_loss = self._step(x, y)
             prefix = 'Test'
             postfix = str(self.history)
@@ -237,7 +234,8 @@ class TSRunner(_BaseRunner):
 
         prefix = 'Test'
         postfix = str(self.history)
-        ProgressBar.show(prefix, postfix, len(test_loader), len(test_loader), newline=True)
+        ProgressBar.show(prefix, postfix, len(test_loader),
+                         len(test_loader), newline=True)
 
         self.history.reset()
 
