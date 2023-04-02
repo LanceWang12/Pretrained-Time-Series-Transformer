@@ -19,7 +19,6 @@ class TSRunner(_BaseRunner):
         net,
         config: AnomalyBertConfig,
         optimizer: optim.Optimizer,
-        criterion: Callable,
         model_ckpt: Optional[Callable] = None,
         device: str = 'cuda'
     ) -> None:
@@ -30,7 +29,8 @@ class TSRunner(_BaseRunner):
         )
         self.net = net.to(self.device)
         self.optimizer = optimizer
-        self.criterion = criterion
+        self.mse = nn.MSELoss()
+        self.kl = nn.KLDivLoss(reduction="batchmean", log_target=True)
         self.model_ckpt = model_ckpt
         self.config = config
 
@@ -77,24 +77,18 @@ class TSRunner(_BaseRunner):
         series_loss = 0.0
         prior_loss = 0.0
         for u in range(len(prior)):
-            series_loss += (torch.mean(my_kl_loss(series[u], (
-                prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1)
-                .repeat(1, 1, 1, self.config.max_position_embeddings)).detach()))
-                + torch.mean(my_kl_loss((prior[u] / torch.unsqueeze(
-                    torch.sum(prior[u], dim=-1), dim=-1)
-                    .repeat(1, 1, 1, self.config.max_position_embeddings)).detach(), series[u])))
-            prior_loss += (torch.mean(my_kl_loss(
-                (prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1),
-                 dim=-1).repeat(1, 1, 1, self.config.max_position_embeddings)),
-                series[u].detach())) + torch.mean(
-                my_kl_loss(series[u].detach(), (prior[u] / torch.unsqueeze(
-                    torch.sum(prior[u], dim=-1), dim=-1).repeat(
-                        1, 1, 1, self.config.max_position_embeddings)))))
+            kl_a = series[u]
+            kl_b = prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(
+                1, 1, 1, self.config.max_position_embeddings)
+            series_loss += torch.mean(self.kl(kl_a, kl_b.detach()) +
+                                      self.kl(kl_b.detach(), kl_a))
+            prior_loss += torch.mean(self.kl(kl_b, kl_a.detach()) +
+                                     self.kl(kl_a.detach(), kl_b))
 
         series_loss = series_loss / len(prior)
         prior_loss = prior_loss / len(prior)
 
-        rec_loss = self.criterion(output, x)
+        rec_loss = self.mse(output, x)
 
         loss1 = rec_loss - self.config.k * series_loss
         loss2 = rec_loss + self.config.k * prior_loss
@@ -123,7 +117,7 @@ class TSRunner(_BaseRunner):
                 loss2.backward()
                 torch.nn.utils.clip_grad_norm_(self.net.parameters(), 1)
                 self.optimizer.step()
-
+                torch.cuda.empty_cache()
                 prefix = f'Epochs: {(epoch + 1):>{epoch_length}} / {epochs}'
                 postfix = str(self.history)
                 ProgressBar.show(prefix, postfix, i, len(train_loader))

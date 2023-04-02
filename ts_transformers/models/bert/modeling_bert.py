@@ -45,6 +45,8 @@ class AnomalyAttention(nn.Module):
             for j in range(window_size):
                 self.distances[i][j] = abs(i - j)
 
+        self.attn_mask = None
+
     def forward(self, queries, keys, values, sigma, attn_mask):
         B, L, H, E = queries.shape
         _, S, _, D = values.shape
@@ -52,8 +54,9 @@ class AnomalyAttention(nn.Module):
 
         scores = torch.einsum("blhe,bshe->bhls", queries, keys)
         if self.mask_flag:
-            if attn_mask is None:
-                attn_mask = TriangularCausalMask(B, L, device=queries.device)
+            if self.attn_mask is None:
+                self.attn_mask = TriangularCausalMask(
+                    B, L, device=queries.device)
             scores.masked_fill_(attn_mask.mask, -np.inf)
         attn = scale * scores
 

@@ -1,12 +1,13 @@
 import pandas as pd
 import numpy as np
 import datetime
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
+import os
 import torch
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from .configuration_dataset import TSAnomalyConfig, SPCAnomalyConfig
-from .utils import load_data, fix_seed
+# from .utils import load_data, fix_seed
 
 
 class TSAnomalyDataset(Dataset):
@@ -96,3 +97,32 @@ def get_loader(
         )
 
     return trainloader, valloader, testloader
+
+
+def load_data(
+    dataset: Any, batch_size: int,
+    shuffle: bool, sampler=None,
+    num_workers: int = -1
+) -> DataLoader:
+    if num_workers == -1:
+        num_workers = len(os.sched_getaffinity(0))
+
+    if sampler:
+        data_loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            shuffle=shuffle,
+            drop_last=True,
+            sampler=sampler
+        )
+    else:
+        data_loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            shuffle=shuffle,
+            drop_last=True
+        )
+
+    return data_loader
