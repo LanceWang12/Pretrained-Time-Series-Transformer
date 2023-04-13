@@ -97,6 +97,7 @@ class _History:
         self._history['accuracy'].append(_accuracy)
 
         for key in self.additional_keys:
+            # print(key)
             _value = sum(self._history[key]) / len(self._history[key])
             self._history[key].append(_value)
 

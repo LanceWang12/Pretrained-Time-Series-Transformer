@@ -15,11 +15,11 @@ from typing import Tuple
 
 
 class TriangularCausalMask():
+
     def __init__(self, B, L, device="cpu"):
         mask_shape = [B, 1, L, L]
         with torch.no_grad():
-            self._mask = torch.triu(torch.ones(
-                mask_shape, dtype=torch.bool), diagonal=1).to(device)
+            self._mask = torch.triu(torch.ones(mask_shape, dtype=torch.bool), diagonal=1).to(device)
 
     @property
     def mask(self):
@@ -27,18 +27,20 @@ class TriangularCausalMask():
 
 
 class SPCBert(nn.Module):
+
     def __init__(self, config: SPCBertConfig) -> None:
         super(SPCBert, self).__init__()
-        self.embed = DataEmbedding(
-            config.input_dim, config.hidden_size, config.hidden_dropout_prob,
-            norm=config.norm, mode=config.mode, mean_lr=config.mean_lr,
-            gate_lr=config.gate_lr, scale_lr=config.scale_lr
-        )
+        self.embed = DataEmbedding(config.input_dim,
+                                   config.hidden_size,
+                                   config.hidden_dropout_prob,
+                                   norm=config.norm,
+                                   )
         if config.backbone == "bert":
             self.encoder = BertEncoder(config)
         else:
             raise NotImplementedError("Other backbones are not implemented.")
 
+        self.output_attention = config.output_attention
         self.spc_rule_num = config.spc_rule_num
         if self.spc_rule_num:
             self.spc_heads = nn.Linear(config.hidden_size, 1)
@@ -46,14 +48,21 @@ class SPCBert(nn.Module):
 
     def forward(self, x) -> Tuple[torch.Tensor, torch.Tensor]:
         x = self.embed(x)
-        x = self.encoder(x)['last_hidden_state']
+        encoder_out = self.encoder(x, output_attentions=True)
+        x = encoder_out['last_hidden_state']
+
         if self.spc_rule_num:
-            spc_pred = x[:, : self.spc_rule_num, :]
+            spc_pred = x[:, :self.spc_rule_num, :]
             spc_pred = self.spc_heads(spc_pred)
         else:
             spc_pred = None
         series_out = x[:, self.spc_rule_num:, :]
         series_out = self.output_heads(series_out)
+        series_out = self.embed.denormalize(series_out)
+
+        if self.output_attention:
+            attn = encoder_out['attentions']
+            return attn, spc_pred, series_out
 
         return spc_pred, series_out
 
@@ -71,24 +80,27 @@ if __name__ == "__main__":
         hidden_act="gelu",
         max_position_embeddings=seq_len,
         norm=True,
+        output_attention=True,
     )
     model = SPCBert(config)
 
     x = torch.rand(batch_size, seq_len, cin)
     # print(x.shape)
     print("Test on cpu:")
-    spc_label, y = model(x)
+    attn, spc_label, y = model(x)
 
     print(f"SPC label: {spc_label.shape}")
     print(f"Series out: {y.shape}")
+    print(f"Attention scores: {attn[-1].shape}")
     print("pass\n")
 
     print("Test on gpu:")
     x = x.cuda()
     model = model.cuda()
-    spc_label, y = model(x)
+    attn, spc_label, y = model(x)
     print(f"SPC label: {spc_label.shape}")
     print(f"Series out: {y.shape}")
+    print(f"Attention scores: {attn[-1].shape}")
     print("pass\n")
 
     config = SPCBertConfig(
@@ -101,6 +113,7 @@ if __name__ == "__main__":
         hidden_act="gelu",
         max_position_embeddings=seq_len,
         norm=True,
+        output_attention=False,
     )
     model = SPCBert(config).cuda()
     print("Test 0 spc label on gpu:")

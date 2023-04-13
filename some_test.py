@@ -61,7 +61,7 @@ def test_data() -> None:
     fix_seed()
     # -------- Prepare dataloader --------
     data_config = SPCAnomalyConfig(
-        spc_col="fault_label",
+        spc_col=["fault_label", "T74_30"], # just mimic some spc label
         target_col="anomaly_label",
         window_size=seq_len,
         batch_size=batch_size,
@@ -72,7 +72,12 @@ def test_data() -> None:
 
     print("Test DataLoader: ", end="")
     try:
+        counter = 0
         for x, spc, y in train_loader:
+            if not counter:
+                print(x.shape, spc.shape, y.shape)
+                print(x[0])
+                counter += 1
             pass
     except IndexError as idx_err:
         print("DataLoader error..., please check!\n")
@@ -84,5 +89,5 @@ def test_data() -> None:
 
 
 if __name__ == "__main__":
-    test_model()
+    # test_model()
     test_data()
