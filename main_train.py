@@ -57,13 +57,33 @@ def parse() -> argparse.Namespace:
     print('=' * 70)
 
     if args.task == "DMDS":
-        args.input_dim = 33
+        args.input_dim = 15
         # In DMDS dataset
         # Force to set val_idx = 57030
         #          set testset as 09112001.csv
         args.val_idx = 57030
-        args.spc_col = ["fault_label"] + \
-            [f'spc_label_{i:02}' for i in range(6)]
+        args.spc_col = [
+            'LC51_03CV_rule1', 'LC51_03X_rule1', 'LC51_03PV_rule1', 'P51_06_rule1',
+            'T51_01_rule1', 'F51_01_rule1', 'P57_03_rule1', 'P57_04_rule1',
+            'FC57_03PV_rule1', 'FC57_03CV_rule1', 'FC57_03X_rule1', 'F74_00_rule1',
+            'LC74_20CV_rule1', 'LC74_20X_rule1', 'LC74_20PV_rule1',
+            'LC51_03PV_rule2', 'P57_04_rule2', 'F74_00_rule2', 'LC74_20CV_rule2',
+            'LC74_20X_rule2', 'LC74_20PV_rule2', 'LC51_03CV_rule3',
+            'LC51_03X_rule3', 'LC51_03PV_rule3', 'P51_06_rule3', 'T51_01_rule3',
+            'F51_01_rule3', 'P57_03_rule3', 'P57_04_rule3', 'FC57_03PV_rule3',
+            'FC57_03CV_rule3', 'FC57_03X_rule3', 'F74_00_rule3', 'LC74_20CV_rule3',
+            'LC74_20X_rule3', 'LC74_20PV_rule3', 'LC51_03CV_rule4',
+            'LC51_03X_rule4', 'LC51_03PV_rule4', 'P51_06_rule4', 'F51_01_rule4',
+            'P57_04_rule4', 'F74_00_rule4', 'LC74_20CV_rule4', 'LC74_20X_rule4',
+            'LC74_20PV_rule4', 'LC51_03CV_rule5', 'LC51_03X_rule5',
+            'LC51_03PV_rule5', 'P51_06_rule5', 'F51_01_rule5', 'P57_03_rule5',
+            'P57_04_rule5', 'FC57_03PV_rule5', 'FC57_03CV_rule5', 'FC57_03X_rule5',
+            'F74_00_rule5', 'LC74_20CV_rule5', 'LC74_20X_rule5', 'LC74_20PV_rule5',
+            'LC51_03CV_rule6', 'LC51_03X_rule6', 'LC51_03PV_rule6', 'P51_06_rule6',
+            'F51_01_rule6', 'P57_03_rule6', 'P57_04_rule6', 'FC57_03CV_rule6',
+            'FC57_03X_rule6', 'F74_00_rule6', 'LC74_20CV_rule6', 'LC74_20X_rule6',
+            'LC74_20PV_rule6'
+        ]
         args.spc_rule_num = len(args.spc_col)
 
     return args
