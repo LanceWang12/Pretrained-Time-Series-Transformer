@@ -19,17 +19,37 @@ class TriangularCausalMask():
     def __init__(self, B, L, device="cpu"):
         mask_shape = [B, 1, L, L]
         with torch.no_grad():
-            self._mask = torch.triu(torch.ones(mask_shape, dtype=torch.bool), diagonal=1).to(device)
+            self._mask = torch.triu(torch.ones(
+                mask_shape, dtype=torch.bool), diagonal=1).to(device)
 
     @property
     def mask(self):
         return self._mask
 
 
+class SPCBERTOutput():
+    def __init__(
+        self,
+        attn,
+        norm_out,
+        spc_pred,
+        out,
+        denorm_out
+    ):
+        super().__init__()
+        self.record = dict()
+        self.record["attn"] = attn
+        self.record["norm_out"] = norm_out
+        self.record["spc_pred"] = spc_pred
+        self.record["out"] = out
+        self.record["denorm_out"] = denorm_out
+
+
 class SPCBert(nn.Module):
 
     def __init__(self, config: SPCBertConfig) -> None:
         super(SPCBert, self).__init__()
+        self.norm = config.norm
         self.embed = DataEmbedding(config.input_dim,
                                    config.hidden_size,
                                    config.hidden_dropout_prob,
@@ -45,15 +65,20 @@ class SPCBert(nn.Module):
         if self.spc_rule_num:
             self.spc_heads = nn.Linear(config.hidden_size, 1)
         self.output_heads = nn.Linear(config.hidden_size, config.output_dim)
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x) -> Tuple[torch.Tensor, torch.Tensor]:
-        x = self.embed(x)
+        if self.norm:
+            norm_out, x = self.embed(x)
+        else:
+            x = self.embed(x)
         encoder_out = self.encoder(x, output_attentions=True)
         x = encoder_out['last_hidden_state']
 
         if self.spc_rule_num:
             spc_pred = x[:, :self.spc_rule_num, :]
             spc_pred = self.spc_heads(spc_pred)
+            spc_pred = self.sigmoid(spc_pred)
         else:
             spc_pred = None
         series_out = x[:, self.spc_rule_num:, :]
@@ -64,7 +89,7 @@ class SPCBert(nn.Module):
             attn = encoder_out['attentions']
             return attn, spc_pred, series_out
 
-        return spc_pred, series_out
+        return norm_out, spc_pred, series_out
 
 
 if __name__ == "__main__":

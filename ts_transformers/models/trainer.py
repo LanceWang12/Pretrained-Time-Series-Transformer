@@ -1,11 +1,13 @@
 # -------- general --------
 from typing import Any, Callable, Optional, Tuple
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report, confusion_matrix
 import time
+import numpy as np
 
 # -------- torch --------
 import torch
 import torch.nn as nn
+import torch.cuda as cuda
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -13,7 +15,16 @@ from torch.utils.data import DataLoader
 # -------- my lib --------
 # from .bert import AnomalyBertConfig
 from .spcbert import SPCBertConfig
-from .utils import ProgressBar, _History, _BaseRunner, my_kl_loss
+from .utils import ProgressBar, _History, my_kl_loss
+
+
+class _BaseRunner:
+    def __init__(self, device='cuda') -> None:
+        self.device = device if cuda.is_available() else 'cpu'
+
+    @property
+    def weights(self) -> None:
+        raise NotImplementedError('weights not implemented')
 
 
 class TSRunner(_BaseRunner):
@@ -26,11 +37,14 @@ class TSRunner(_BaseRunner):
                  device: str = 'cuda') -> None:
         super().__init__(device=device)
 
-        self.history = _History(metrics=['loss', 'accuracy'])
+        self.history = _History(
+            metrics=['loss', 'recall', 'precision', 'f1-score'],
+            label_num=config.spc_rule_num,
+        )
         self.net = net.to(self.device)
         self.optimizer = optimizer
         self.mse = nn.MSELoss()
-        self.bce = nn.BCEWithLogitsLoss()
+        self.bce = nn.BCELoss()
         # self.kl = nn.KLDivLoss(reduction="batchmean", log_target=True)
         self.model_ckpt = model_ckpt
         self.config = config
@@ -55,7 +69,23 @@ class TSRunner(_BaseRunner):
         loss = mse_loss + bce_loss
         self.history.log('count', y.shape[0])
         self.history.log('loss', loss)
-        self.history.log('correct', y.shape[0])
+
+        # compute tp, fp, fn, tn
+        spc_out = spc_out.squeeze(-1).detach().cpu().numpy()
+        spc_out = spc_out > 0.5
+        spc_target = spc_target.squeeze(-1).detach().cpu().numpy()
+        for i in range(self.config.spc_rule_num):
+            y_true, y_pred = spc_target[:, i], spc_out[:, i]
+            cm = confusion_matrix(y_true, y_pred)
+            tp = np.diagonal(cm)
+            fp = cm.sum(axis=0) - tp
+            fn = cm.sum(axis=1) - tp
+            tn = cm.sum() - (tp + fp + fn)
+            tp, fp, tn, fn = tp[0], fp[0], tn[0], fn[0]
+            self.history.log(f"tp_{i}", tp, idx=i)
+            self.history.log(f"fp_{i}", fp, idx=i)
+            self.history.log(f"fn_{i}", fn, idx=i)
+            self.history.log(f"tn_{i}", tn, idx=i)
 
         return loss
 
@@ -132,7 +162,7 @@ class TSRunner(_BaseRunner):
             x, x_pad, y = x.to(self.device), x_pad.to(
                 self.device), y.to(self.device)
             _, spc_pred, series_out = self.net(x_pad)
-            errors = torch.sqrt((series_out - x)**2)
+            errors = (series_out - x)**2
             for j in range(len(spc_pred)):
                 time_points = y[j]  # [seq,]
                 normal_errors = (errors[j])[time_points == 0]  # [<seq, dim]
@@ -158,7 +188,7 @@ class TSRunner(_BaseRunner):
     @torch.no_grad()
     def test(self, test_loader: DataLoader) -> None:
         self.net.eval()
-        real_threshold = self.threshold_mean - \
+        real_threshold = self.threshold_mean + \
             self.config.sensitive_level * self.threshold_std
         preds = []
         ground_truth = []
@@ -173,9 +203,9 @@ class TSRunner(_BaseRunner):
             # series_out.shape = (batch, seq_len, input_dim)
             _, spc_pred, series_out = self.net(x_pad)
             # errs.shape = (batch, seq_len)
-            errs = torch.mean(torch.sqrt((series_out - x)**2), dim=2)
+            errs = torch.mean((series_out - x)**2, dim=2)
             # (batch, seq_len) -> (batch,)
-            pred = torch.sum((errs < real_threshold), dim=1)
+            pred = torch.sum((errs > real_threshold), dim=1)
             # pred.shape = (batch,)
             pred = pred > 0
             preds.append(pred)
@@ -185,7 +215,7 @@ class TSRunner(_BaseRunner):
             gt = torch.sum(y, dim=1) > 0
             ground_truth.append(gt)
             ProgressBar.show(prefix, postfix, i, len(test_loader))
-        print(errs)
+        # print(errs)
         preds = torch.cat(preds).detach().cpu().numpy()
         ground_truth = torch.cat(ground_truth).detach().cpu().numpy()
         report = classification_report(ground_truth, preds)

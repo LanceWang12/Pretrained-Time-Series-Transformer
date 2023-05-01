@@ -48,7 +48,8 @@ def parse() -> argparse.Namespace:
     parser.add_argument('--output_attention', type=int, default=1)
     parser.add_argument('--norm', type=int, default=1)
     parser.add_argument('--spc_rule_num', type=int, default=1)
-    parser.add_argument('--sensitive_level', type=int, default=0)  # -3 to 3
+    parser.add_argument('--sensitive_level', type=float,
+                        default=4)  # -3 to 3
     # parser.add_argument('--k', type=int, default=3)
     args = parser.parse_args()
     print('=' * 70)
@@ -84,6 +85,7 @@ def parse() -> argparse.Namespace:
             'FC57_03X_rule6', 'F74_00_rule6', 'LC74_20CV_rule6', 'LC74_20X_rule6',
             'LC74_20PV_rule6'
         ]
+        args.seq_len = args.seq_len + len(args.spc_col)
         args.spc_rule_num = len(args.spc_col)
 
     return args

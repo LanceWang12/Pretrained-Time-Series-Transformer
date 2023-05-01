@@ -71,13 +71,15 @@ class SPCAnomalyDataset(Dataset):
         self.time_idx = config.time_idx
         if self.time_idx is not None:
             self.time_stamp = data[self.time_idx]
-        if self.time_idx is not None:
             self.X = torch.as_tensor(np.asarray(
                 data.drop(columns=[config.time_idx, config.target_col])),
                 dtype=torch.float)
-        self.X = torch.as_tensor(np.asarray(
-            data.drop(columns=[config.target_col]).drop(columns=config.spc_col)),
-            dtype=torch.float)
+        else:
+            self.X = torch.as_tensor(
+                np.asarray(data.drop(columns=[config.target_col]).drop(
+                    columns=config.spc_col)),
+                dtype=torch.float
+            )
         self.Y = torch.as_tensor(np.expand_dims(np.asarray(data[config.target_col]), axis=-1),
                                  dtype=torch.float).squeeze()
         if len(self.X) < self.window_size:
@@ -89,6 +91,8 @@ class SPCAnomalyDataset(Dataset):
         x = self.X[idx:idx + self.window_size]
         # padding input series
         x_pad = F.pad(x, (0, 0, self.spc_label_num, 0), value=0)
+        # print(x_pad.shape, x.shape)
+        # exit(1)
 
         spc = self.spc[idx + self.window_size]
 
@@ -112,8 +116,8 @@ def get_loader(
     flag: str = "DMDS",
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     if flag == "DMDS":
-        csv_dir = "data/DMDS/csv/"
-        train_df = pd.read_csv(csv_dir + "30102001.csv")
+        csv_dir = "data/DMDS/csv_fe/"
+        train_df = pd.read_csv(csv_dir + "30102001_spc_label.csv")
 
         # 固定 [57030: ] 為 validation set
         # 因為需要剩一些 anomaly time points 來設定 threshold
@@ -124,7 +128,7 @@ def get_loader(
 
         val_df = train_df[val_idx:]
         train_df = train_df[:val_idx]
-        test_df = pd.read_csv(csv_dir + "17112001.csv")
+        test_df = pd.read_csv(csv_dir + "17112001_spc_label.csv")
 
         trainset = SPCAnomalyDataset(train_df, config)
         valset = SPCAnomalyDataset(val_df, config)
