@@ -1,6 +1,6 @@
 # -------- general --------
 from typing import Any, Callable, Optional, Tuple
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, precision_recall_fscore_support
 import time
 import numpy as np
 
@@ -66,7 +66,8 @@ class TSRunner(_BaseRunner):
         assert torch.isfinite(mse_loss), f"mse_loss is infinite: {mse_loss}"
 
         bce_loss = self.bce(spc_out, spc_target)
-        loss = mse_loss + bce_loss
+        loss = self.config.alpha * mse_loss + \
+            (1 - self.config.alpha) * bce_loss
         self.history.log('count', y.shape[0])
         self.history.log('loss', loss)
 
@@ -146,7 +147,7 @@ class TSRunner(_BaseRunner):
         if self.model_ckpt is not None:
             self.model_ckpt[0](self.history[-1]['loss'], self.net)
 
-        self.history.reset()
+        # self.history.reset()
 
     @torch.no_grad()
     def set_threshold(self, thres_loader: DataLoader) -> None:
@@ -192,12 +193,14 @@ class TSRunner(_BaseRunner):
             self.config.sensitive_level * self.threshold_std
         preds = []
         ground_truth = []
+        spc_preds = []
+        spc_labels = []
         print('*' * 60)
         prefix = "Test, produce classification report"
         postfix = ""
-        for i, (x, x_pad, _, y) in enumerate(test_loader):
-            x, x_pad, y = x.to(self.device), x_pad.to(
-                self.device), y.to(self.device)
+        for i, (x, x_pad, spc_label, y) in enumerate(test_loader):
+            x, x_pad, spc_label, y = x.to(self.device), x_pad.to(
+                self.device), spc_label.to(self.device), y.to(self.device)
 
             #  <model prediction>
             # series_out.shape = (batch, seq_len, input_dim)
@@ -209,26 +212,45 @@ class TSRunner(_BaseRunner):
             # pred.shape = (batch,)
             pred = pred > 0
             preds.append(pred)
+            spc_preds.append(spc_pred)
 
             # <ground truth>
             # (batch, seq_len) -> (batch,)
             gt = torch.sum(y, dim=1) > 0
             ground_truth.append(gt)
+            spc_labels.append(spc_label)
             ProgressBar.show(prefix, postfix, i, len(test_loader))
-        # print(errs)
+
+        # Anomaly detection report
         preds = torch.cat(preds).detach().cpu().numpy()
         ground_truth = torch.cat(ground_truth).detach().cpu().numpy()
-        report = classification_report(ground_truth, preds)
+        anomaly_report = classification_report(ground_truth, preds)
 
         ProgressBar.show(prefix, postfix, len(test_loader),
                          len(test_loader), newline=True)
-        print()
-        print(report)
-        print('*' * 60)
 
         self.history.reset()
+        print()
+        print(anomaly_report)
+        print('*' * 60)
 
-        return report
+        # SPC label classification report
+        spc_preds = torch.cat(spc_preds).squeeze(-1).detach().cpu().numpy()
+        spc_labels = torch.cat(spc_labels).detach().cpu().numpy()
+        spc_report = []
+        # exit(1)
+        for i in range(self.config.spc_rule_num):
+            spc_pred = spc_preds[:, i]
+            spc_pred = spc_pred > 0.5
+            spc_label = spc_labels[:, i]
+            precision, recall, f1, _ = precision_recall_fscore_support(
+                spc_label, spc_pred, average="binary", zero_division=0)
+            print()
+            print(
+                f"SPC label {i:02}: precision, recall, f1-score = {precision:.3f}, {recall:.3f}, {f1:.3f}")
+            spc_report.append((precision, recall, f1))
+
+        return anomaly_report, spc_report
 
     @property
     @torch.no_grad()

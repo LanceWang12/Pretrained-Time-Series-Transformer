@@ -21,9 +21,9 @@ from ts_transformers.models.spcbert import SPCBert, SPCBertConfig
 def parse() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument('--load', type=str, default=None)
-    parser.add_argument('--epochs', type=int, default=500)
+    parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--batch_size', type=int, default=128)
-    parser.add_argument('--lr', type=float, default=2e-5)
+    parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--trainable', type=int, default=1)
     parser.add_argument('--patience', type=int, default=10)
@@ -48,8 +48,8 @@ def parse() -> argparse.Namespace:
     parser.add_argument('--output_attention', type=int, default=1)
     parser.add_argument('--norm', type=int, default=1)
     parser.add_argument('--spc_rule_num', type=int, default=1)
-    parser.add_argument('--sensitive_level', type=float,
-                        default=4)  # -3 to 3
+    parser.add_argument('--sensitive_level', type=float, default=4)
+    parser.add_argument('--alpha', type=float, default=0.5)
     # parser.add_argument('--k', type=int, default=3)
     args = parser.parse_args()
     print('=' * 70)
@@ -167,13 +167,17 @@ def main() -> None:
                       valid_loader=val_loader, scheduler=scheduler)
         end = time.time()
         print(f'End in {end - start:.4f}s...\n')
-
+        # for i in range(args.spc_rule_num):
+        #     recall, precision, f1 = trainer.history._history[f"recall_{i}"][-1], trainer.history._history[
+        #         f"precision_{i}"][-1], trainer.history._history[f"f1-score_{i}"][-1]
+        #     print(
+        #         f"{args.spc_col[i]:18s}: precision({precision:.3f}), recall({recall:.3f}), f1-score({f1:.3f})")
         for key, value in trainer.weights.items():
             torch.save(value.state_dict(), os.path.join(
                 ckpt_path, "last_epoch.pt"))
 
     trainer.set_threshold(thres_loader)
-    report = trainer.test(test_loader)
+    anomaly_report, spc_report = trainer.test(test_loader)
 
 
 if __name__ == "__main__":
