@@ -50,21 +50,28 @@ class TSRunner(_BaseRunner):
         self.config = config
 
     def _train_step(self, x: torch.Tensor, x_pad: torch.Tensor, spc_target: torch.Tensor,
-                    y: torch.Tensor) -> torch.Tensor:
+                    y: torch.Tensor, val: bool = False) -> torch.Tensor:
         x = x.to(self.device)
         x_pad = x_pad.to(self.device)
         y = y.to(self.device)
         spc_target = spc_target.to(self.device)
 
         if self.config.output_attention:
-            attn, spc_out, out = self.net(x_pad)
+            attn, norm_out, spc_out, out = self.net(x_pad)
         else:
-            spc_out, out = self.net(x_pad)
+            norm_out, spc_out, out = self.net(x_pad)
 
-        mse_loss = self.mse(out, x)
+        if val:
+            # compute the relative distance on validation set
+            mse_loss = self.mse(out, norm_out)
+        else:
+            # compute the absolute distance on training set
+            mse_loss = self.mse(out, x)
+
         spc_target = spc_target.unsqueeze(dim=-1)
         assert torch.isfinite(mse_loss), f"mse_loss is infinite: {mse_loss}"
 
+        spc_target = spc_target.squeeze(-1)
         bce_loss = self.bce(spc_out, spc_target)
         loss = self.config.alpha * mse_loss + \
             (1 - self.config.alpha) * bce_loss
@@ -99,7 +106,7 @@ class TSRunner(_BaseRunner):
         for epoch in range(epochs):
             self.net.train()
             for i, (x, x_pad, spc, y) in enumerate(train_loader):
-                loss = self._train_step(x, x_pad, spc, y)
+                loss = self._train_step(x, x_pad, spc, y, val=False)
 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -132,7 +139,7 @@ class TSRunner(_BaseRunner):
         self.net.eval()
         flag = True
         for i, (x, x_pad, spc, y) in enumerate(test_loader):
-            loss = self._train_step(x, x_pad, spc, y)
+            loss = self._train_step(x, x_pad, spc, y, val=True)
             prefix = 'Val'
             postfix = str(self.history)
             ProgressBar.show(prefix, postfix, i, len(test_loader))
@@ -162,8 +169,9 @@ class TSRunner(_BaseRunner):
             # x: [batch, seq, dim], y: [batch, seq]
             x, x_pad, y = x.to(self.device), x_pad.to(
                 self.device), y.to(self.device)
-            _, spc_pred, series_out = self.net(x_pad)
+            _, norm_out, spc_pred, series_out = self.net(x_pad, denorm=True)
             errors = (series_out - x)**2
+            # errors = (series_out - norm_out)**2
             for j in range(len(spc_pred)):
                 time_points = y[j]  # [seq,]
                 normal_errors = (errors[j])[time_points == 0]  # [<seq, dim]
@@ -204,9 +212,10 @@ class TSRunner(_BaseRunner):
 
             #  <model prediction>
             # series_out.shape = (batch, seq_len, input_dim)
-            _, spc_pred, series_out = self.net(x_pad)
+            _, norm_out, spc_pred, series_out = self.net(x_pad, denorm=True)
             # errs.shape = (batch, seq_len)
             errs = torch.mean((series_out - x)**2, dim=2)
+            # errs = torch.mean((series_out - norm_out)**2, dim=2)
             # (batch, seq_len) -> (batch,)
             pred = torch.sum((errs > real_threshold), dim=1)
             # pred.shape = (batch,)
@@ -245,9 +254,9 @@ class TSRunner(_BaseRunner):
             spc_label = spc_labels[:, i]
             precision, recall, f1, _ = precision_recall_fscore_support(
                 spc_label, spc_pred, average="binary", zero_division=0)
-            print()
-            print(
-                f"SPC label {i:02}: precision, recall, f1-score = {precision:.3f}, {recall:.3f}, {f1:.3f}")
+            # print()
+            # print(
+            #     f"SPC label {i:02}: precision, recall, f1-score = {precision:.3f}, {recall:.3f}, {f1:.3f}")
             spc_report.append((precision, recall, f1))
 
         return anomaly_report, spc_report

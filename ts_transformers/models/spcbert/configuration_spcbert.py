@@ -11,10 +11,8 @@ class SPCBertConfig(BertConfig):
         output_attention: bool = True,
         norm: bool = True,
         mode: str = "full",
-        sensitive_level: int = 0,  # -3 to 3
-        mean_lr=0.00001,
-        gate_lr=0.001,
-        scale_lr=0.00001,
+        sensitive_level: int = 0,
+        alpha: float = 0.5,
         ** kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -27,6 +25,6 @@ class SPCBertConfig(BertConfig):
         self.norm = norm
         self.mode = mode
         self.sensitive_level = sensitive_level
-        self.mean_lr = mean_lr
-        self.gate_lr = gate_lr
-        self.scale_lr = scale_lr
+
+        # total_loss = alpha * reconstruction + (1 - alpha) * spc_label
+        self.alpha = alpha

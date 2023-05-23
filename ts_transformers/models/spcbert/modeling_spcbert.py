@@ -49,6 +49,8 @@ class SPCBert(nn.Module):
 
     def __init__(self, config: SPCBertConfig) -> None:
         super(SPCBert, self).__init__()
+        # print(config.max_position_embeddings)
+        # exit(1)
         self.norm = config.norm
         self.embed = DataEmbedding(config.input_dim,
                                    config.hidden_size,
@@ -63,31 +65,34 @@ class SPCBert(nn.Module):
         self.output_attention = config.output_attention
         self.spc_rule_num = config.spc_rule_num
         if self.spc_rule_num:
-            self.spc_heads = nn.Linear(config.hidden_size, 1)
+            self.spc_heads = nn.Linear(config.hidden_size, self.spc_rule_num)
         self.output_heads = nn.Linear(config.hidden_size, config.output_dim)
         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, x) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x, denorm=True) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.norm:
             norm_out, x = self.embed(x)
+            norm_out = norm_out[:, 1:, :]
         else:
             x = self.embed(x)
         encoder_out = self.encoder(x, output_attentions=True)
         x = encoder_out['last_hidden_state']
 
         if self.spc_rule_num:
-            spc_pred = x[:, :self.spc_rule_num, :]
+            spc_pred = x[:, 1, :]
             spc_pred = self.spc_heads(spc_pred)
             spc_pred = self.sigmoid(spc_pred)
         else:
             spc_pred = None
-        series_out = x[:, self.spc_rule_num:, :]
+        series_out = x[:, 1:, :]
         series_out = self.output_heads(series_out)
-        series_out = self.embed.denormalize(series_out)
+
+        if denorm:
+            series_out = self.embed.denormalize(series_out)
 
         if self.output_attention:
             attn = encoder_out['attentions']
-            return attn, spc_pred, series_out
+            return attn, norm_out, spc_pred, series_out
 
         return norm_out, spc_pred, series_out
 
@@ -95,10 +100,11 @@ class SPCBert(nn.Module):
 if __name__ == "__main__":
     batch_size, cin, seq_len, hidden_size = 64, 38, 100, 128
     n_head = 8
+    seq_len += 1
     config = SPCBertConfig(
         input_dim=cin,
         output_dim=cin,
-        spc_rule_num=4,
+        spc_rule_num=25,
         num_hidden_layers=3,
         num_attention_heads=n_head,
         hidden_size=hidden_size,

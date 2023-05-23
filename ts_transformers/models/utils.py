@@ -3,6 +3,8 @@ import torch
 import numpy as np
 from sklearn.metrics import average_precision_score
 from sklearn.metrics import f1_score
+import warnings
+warnings.filterwarnings("error")
 
 
 class ProgressBar:
@@ -98,11 +100,24 @@ class _History:
                 ) == 1 and\
                 len(self._history['count']) == len(self._history[f'tp_{idx}']) and\
                 len(self._history['count']) > len(self._history[f'f1-score_{idx}']):
-            recall = self._history[f"tp_{idx}"][-1] / (
-                self._history[f"tp_{idx}"][-1] + self._history[f"fn_{idx}"][-1])
-            precision = self._history[f"tp_{idx}"][-1] / (
-                self._history[f"tp_{idx}"][-1] + self._history[f"fp_{idx}"][-1])
-            f1 = 2 / (1 / precision + 1 / recall)
+
+            try:
+                recall = self._history[f"tp_{idx}"][-1] / (
+                    self._history[f"tp_{idx}"][-1] + self._history[f"fn_{idx}"][-1])
+            except (ZeroDivisionError, RuntimeWarning):
+                recall = 0
+
+            try:
+                precision = self._history[f"tp_{idx}"][-1] / (
+                    self._history[f"tp_{idx}"][-1] + self._history[f"fp_{idx}"][-1])
+            except (ZeroDivisionError, RuntimeWarning):
+                precision = 0
+
+            try:
+                f1 = 2 / (1 / precision + 1 / recall)
+            except (ZeroDivisionError, RuntimeWarning):
+                f1 = 0
+
             self._history[f"recall_{idx}"].append(recall)
             self._history[f"precision_{idx}"].append(precision)
             self._history[f"f1-score_{idx}"].append(f1)
@@ -112,6 +127,9 @@ class _History:
                     self.label_num)]) / self.label_num
                 precision_avg = sum([self._history[f"precision_{i}"][-1] for i in range(
                     self.label_num)]) / self.label_num
+                # print([self._history[f"f1-score_{i}"][-1]
+                #       for i in range(self.label_num)])
+                # exit(1)
                 f1_avg = sum([self._history[f"f1-score_{i}"][-1] for i in range(
                     self.label_num)]) / self.label_num
                 self._history['recall'].append(recall_avg)

@@ -67,7 +67,7 @@ class SPCAnomalyDataset(Dataset):
         # to (batch_size, seq_len, features) ---> important!!!
         self.output_every_anomaly_label = config.output_every_anomaly_label
         self.spc_label_num = len(config.spc_col)
-        self.window_size = config.window_size - self.spc_label_num
+        self.window_size = config.window_size
         self.time_idx = config.time_idx
         if self.time_idx is not None:
             self.time_stamp = data[self.time_idx]
@@ -89,10 +89,9 @@ class SPCAnomalyDataset(Dataset):
 
     def __getitem__(self, idx) -> tuple:
         x = self.X[idx:idx + self.window_size]
-        # padding input series
-        x_pad = F.pad(x, (0, 0, self.spc_label_num, 0), value=0)
-        # print(x_pad.shape, x.shape)
-        # exit(1)
+        # padding input series: first token is spc token
+        # x_pad = F.pad(x, (0, 0, self.spc_label_num, 0), value=0)
+        x_pad = F.pad(x, (0, 0, 1, 0), value=0)
 
         spc = self.spc[idx + self.window_size]
 
