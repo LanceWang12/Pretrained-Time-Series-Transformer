@@ -129,7 +129,8 @@ class SPCPatchBert(nn.Module):
 
         # Patchify1D
         self.patchify = Patchify1D(config)
-        config.max_position_embeddings = self.patchify.patch_num
+        # because of spc token at the first place
+        config.max_position_embeddings = self.patchify.patch_num + 1
 
         # Position encoding & Token embedding (don't use norm)
         self.embed = DataEmbedding(
@@ -204,13 +205,12 @@ class SPCPatchBert(nn.Module):
             spc_pred = None
         series_out = out[:, :, 1:, :]
         series_out = self.output_heads(series_out)
+        if self.norm:
+            series_out = self.norm._denormalize(series_out)
         if self.verbose:
             print(f"series_out: {series_out.shape}")
 
         if mode == 0:  # in training stage and anomaly detection stage
-            if denorm:
-                series_out = self.embed.denormalize(series_out)
-
             if self.output_attention:
                 return attn, norm_out, spc_pred, series_out
 

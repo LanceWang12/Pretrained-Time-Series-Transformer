@@ -15,6 +15,7 @@ class TSAnomalyConfig(object):
         test_idx: int = None,
         output_every_anomaly_label: bool = False,
         num_workers: int = 4,
+        padding: bool = True,
         echo: bool = True,
     ) -> None:
         super().__init__()
@@ -26,6 +27,7 @@ class TSAnomalyConfig(object):
         self.test_size = test_size
         self.test_idx = test_idx
         self.val_idx = val_idx
+        self.padding = padding
 
         # True: Anomaly_Label[idx: idx + wnd_size]
         # False: Anomaly_Label[idx + wnd_size]

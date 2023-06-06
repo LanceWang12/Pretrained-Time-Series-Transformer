@@ -69,6 +69,7 @@ class SPCAnomalyDataset(Dataset):
         self.spc_label_num = len(config.spc_col)
         self.window_size = config.window_size
         self.time_idx = config.time_idx
+        self.padding = config.padding
         if self.time_idx is not None:
             self.time_stamp = data[self.time_idx]
             self.X = torch.as_tensor(np.asarray(
@@ -90,8 +91,10 @@ class SPCAnomalyDataset(Dataset):
     def __getitem__(self, idx) -> tuple:
         x = self.X[idx:idx + self.window_size]
         # padding input series: first token is spc token
-        # x_pad = F.pad(x, (0, 0, self.spc_label_num, 0), value=0)
-        x_pad = F.pad(x, (0, 0, 1, 0), value=0)
+        if self.padding:
+            x_pad = F.pad(x, (0, 0, 1, 0), value=0)
+        else:  # no padding
+            x_pad = x
 
         spc = self.spc[idx + self.window_size]
 

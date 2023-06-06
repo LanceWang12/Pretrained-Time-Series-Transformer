@@ -61,12 +61,13 @@ class TSRunner(_BaseRunner):
         else:
             norm_out, spc_out, out = self.net(x_pad)
 
-        if val:
-            # compute the relative distance on validation set
-            mse_loss = self.mse(out, norm_out)
-        else:
-            # compute the absolute distance on training set
-            mse_loss = self.mse(out, x)
+        mse_loss = self.mse(out, x)
+        # if val:
+        #     # compute the relative distance on validation set
+        #     mse_loss = self.mse(out, norm_out)
+        # else:
+        #     # compute the absolute distance on training set
+        #     mse_loss = self.mse(out, x)
 
         spc_target = spc_target.unsqueeze(dim=-1)
         assert torch.isfinite(mse_loss), f"mse_loss is infinite: {mse_loss}"
@@ -190,12 +191,12 @@ class TSRunner(_BaseRunner):
         duration = end - start
         print(f"Set the anomaly threshold by valset in {duration:.2f}sec.")
         print(f"Mean: {self.threshold_mean:.6f}")
-        print(f"Stdard Error: {self.threshold_std:.6f}")
+        print(f"Stdandard Error: {self.threshold_std:.6f}")
         print('-' * 55)
         print()
 
     @torch.no_grad()
-    def test(self, test_loader: DataLoader) -> None:
+    def test(self, test_loader: DataLoader):
         self.net.eval()
         real_threshold = self.threshold_mean + \
             self.config.sensitive_level * self.threshold_std
@@ -233,7 +234,8 @@ class TSRunner(_BaseRunner):
         # Anomaly detection report
         preds = torch.cat(preds).detach().cpu().numpy()
         ground_truth = torch.cat(ground_truth).detach().cpu().numpy()
-        anomaly_report = classification_report(ground_truth, preds)
+        anomaly_report = classification_report(
+            ground_truth, preds, zero_division=0)
 
         ProgressBar.show(prefix, postfix, len(test_loader),
                          len(test_loader), newline=True)
