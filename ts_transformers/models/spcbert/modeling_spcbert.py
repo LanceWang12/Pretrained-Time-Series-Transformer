@@ -204,11 +204,9 @@ class SPCPatchBert(nn.Module):
         self,
         x: torch.Tensor,
         mode: int = 0,
-        idx: int = 0,
     ):
         # -----------------------------------
-        # | mode: 0: training mode, 1: validation mode, 2: get representation
-        # | idx: get model[idx]'s output in training mode
+        # | mode: 0: training mode, validation mode, 2: get representation
         # -----------------------------------
 
         # --------------------------------------------------------------------------
@@ -238,17 +236,7 @@ class SPCPatchBert(nn.Module):
 
         # << Encoder >>
         if self.ensemble:
-            if mode == 0:  # training
-                input_tokens = out.reshape(batch_size, features_num,
-                                           patch_num, self.hidden_size)[:, idx]
-                encoder_out = self.encoders[idx](
-                    input_tokens, output_attentions=True)
-                out = encoder_out["last_hidden_state"]
-                attn = torch.cat(encoder_out['attentions'], dim=0).reshape(
-                    self.num_hidden_layers, batch_size,
-                    self.num_attention_heads, patch_num, patch_num
-                ).mean(axis=(0, 2))
-            elif mode == 1:  # inference, validation, test
+            if mode == 0:  # training, inference, validation, test
                 # Get each features to input in each responsible model
                 input_tokens = out.reshape(batch_size, features_num,
                                            patch_num, self.hidden_size)
@@ -289,11 +277,7 @@ class SPCPatchBert(nn.Module):
 
         # << SPC Heads >>
         if self.ensemble:
-            if mode == 0:  # training
-                # out: (batch_size, patch_num, hidden_size)
-                spc_out = self.spc_heads[idx](out[:, 0])
-                spc_out = self.sigmoid(spc_out)
-            elif mode == 1:  # inference, validation & test
+            if mode == 0:  # inference, validation & test
                 # out: (batch_size, input_dim, patch_num, hidden_size)
                 spc_out = torch.zeros(batch_size, self.spc_rule_num).to(device)
                 start = 0
@@ -317,12 +301,7 @@ class SPCPatchBert(nn.Module):
 
         # << Series Output Heads >>
         if self.ensemble:
-            if mode == 0:  # training
-                # out: (batch_size, patch_num, hidden_size)
-                # to fit UnPatchify input format
-                # out = out.unsqueeze(1)
-                series_out = self.output_heads[idx](out[:, 1:])
-            elif mode == 1:  # inference, validation & test
+            if mode == 0:  # inference, validation & test
                 # out: (batch_size, input_dim, patch_num, hidden_size)
                 series_out = torch.zeros(
                     batch_size, self.window_size, self.input_dim).to(device)
@@ -338,22 +317,12 @@ class SPCPatchBert(nn.Module):
             print(f"unpatchified_series_out: {series_out.shape}")
 
         if self.norm:
-            if (mode == 0) and (self.ensemble):
-                # series_out: (batch_size, window_size) (because only output 1 feature)
-                # To fit denorm input format
-                series_out_tmp = series_out
-                series_out = torch.zeros(
-                    batch_size, self.window_size, self.input_dim).to(device)
-                series_out[:, :, idx] = series_out_tmp
-                # series_out: (batch_size, self.window_size, self.input_dim)
-                series_out = self.norm._denormalize(series_out)[:, :, idx]
-            else:
-                series_out = self.norm._denormalize(series_out)
+            series_out = self.norm._denormalize(series_out)
         if self.verbose:
             print(f"denormed_series_out: {series_out.shape}")
 
         # << Final Output Stage >>
-        if (mode == 0) or (mode == 1):  # training & inference
+        if mode == 0:  # training & inference
             if self.output_attention:
                 return attn, norm_out, spc_out, series_out
             else:
@@ -361,11 +330,8 @@ class SPCPatchBert(nn.Module):
         else:  # get representation
             return spc_out, attn
 
-    def forward(self, x: torch.Tensor, val: bool = False, idx: int = 0):
-        if val:
-            return self._forward(x, mode=1)
-        else:
-            return self._forward(x, mode=0, idx=idx)
+    def forward(self, x: torch.Tensor):
+        return self._forward(x, mode=0)
 
     def get_representation(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError(
@@ -405,6 +371,9 @@ if __name__ == "__main__":
         parser.add_argument('--stride', type=int, default=4)
         parser.add_argument('--patch_padding', type=int, default=1)
         parser.add_argument('--ensemble', type=int, default=1)
+        parser.add_argument('--load_norm', type=str, default="")
+        parser.add_argument('--load_embed', type=str, default="")
+        parser.add_argument('--load_encoder', type=str, default="")
         parser.add_argument('--verbose', type=int, default=0)
         args = parser.parse_args()
         args.spc_head_lst = [2, 3, 3, 4, 2, 2, 1, 2, 3, 2]
@@ -482,6 +451,9 @@ if __name__ == "__main__":
             stride=args.stride,
             spc_head_lst=args.spc_head_lst,
             ensemble=args.ensemble,
+            load_norm=args.load_norm,
+            load_embed=args.load_embed,
+            load_encoder=args.load_encoder,
             verbose=args.verbose,
         )
         model = SPCPatchBert(config)
@@ -489,11 +461,10 @@ if __name__ == "__main__":
         # test on cpu
         x = torch.rand(args.batch_size, args.window_size, args.input_dim)
         if args.verbose:
-            print(f"{red_background}Test inference flow...{origin}")
-        attn, norm_out, spc_out, series_out = model(x, val=True)
+            print(f"Input shape: {x.shape}")
         if args.verbose:
-            print(f"{red_background}Test training flow...{origin}")
-        attn, norm_out, spc_out, series_out = model(x, val=False, idx=2)
+            print(f"{red_background}Test inference flow...{origin}")
+        attn, norm_out, spc_out, series_out = model(x)
         print(f"{green}{args.target} pass the test on cpu{origin}")
 
         # test on gpu
@@ -501,10 +472,7 @@ if __name__ == "__main__":
         model = model.cuda()
         if args.verbose:
             print(f"{red_background}Test inference flow...{origin}")
-        attn, norm_out, spc_out, series_out = model(x, val=True)
-        if args.verbose:
-            print(f"{red_background}Test training flow...{origin}")
-        attn, norm_out, spc_out, series_out = model(x, val=False, idx=2)
+        attn, norm_out, spc_out, series_out = model(x)
         print(f"{green}{args.target} pass the test on gpu{origin}")
 
     def main():
