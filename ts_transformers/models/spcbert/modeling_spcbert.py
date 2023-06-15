@@ -1,10 +1,10 @@
 if __name__ == "__main__":
     import argparse
     from configuration_spcbert import SPCBertConfig
-    from embed import DataEmbedding, Patchify1D, RevIN, UnPatchify1D
+    from embed import DataEmbedding, Patchify1D, RevIN, UnPatchify1D, UnPatchify1DPerFeature
 else:
     from .configuration_spcbert import SPCBertConfig
-    from .embed import DataEmbedding, Patchify1D, RevIN, UnPatchify1D
+    from .embed import DataEmbedding, Patchify1D, RevIN, UnPatchify1D, UnPatchify1DPerFeature
 
 from transformers.models.bert.modeling_bert import BertEncoder
 import torch.nn.functional as F
@@ -34,7 +34,7 @@ class SPCBERTOutput():
         self,
         attn,
         norm_out,
-        spc_pred,
+        spc_out,
         out,
         denorm_out
     ):
@@ -42,7 +42,7 @@ class SPCBERTOutput():
         self.record = dict()
         self.record["attn"] = attn
         self.record["norm_out"] = norm_out
-        self.record["spc_pred"] = spc_pred
+        self.record["spc_out"] = spc_out
         self.record["out"] = out
         self.record["denorm_out"] = denorm_out
 
@@ -80,11 +80,11 @@ class SPCBert(nn.Module):
 
         if self.spc_rule_num:
             spc_out = x[:, 0, :]
-            spc_pred = self.spc_heads(spc_out)
-            spc_pred = self.sigmoid(spc_pred)
+            spc_out = self.spc_heads(spc_out)
+            spc_out = self.sigmoid(spc_out)
         else:
             spc_out = None
-            spc_pred = None
+            spc_out = None
         series_out = x[:, 1:, :]
         series_out = self.output_heads(series_out)
 
@@ -95,9 +95,9 @@ class SPCBert(nn.Module):
                 series_out = self.embed.denormalize(series_out)
 
             if self.output_attention:
-                return attn, norm_out, spc_pred, series_out
+                return attn, norm_out, spc_out, series_out
 
-            return norm_out, spc_pred, series_out
+            return norm_out, spc_out, series_out
         else:  # get representation
             return spc_out, attn
 
@@ -116,7 +116,12 @@ class SPCPatchBert(nn.Module):
     def __init__(self, config: SPCBertConfig) -> None:
         super(SPCPatchBert, self).__init__()
         self.verbose = config.verbose
+        self.window_size = config.window_size
         self.hidden_size = config.hidden_size
+        self.input_dim = config.input_dim
+        self.num_hidden_layers = config.num_hidden_layers
+        self.num_attention_heads = config.num_attention_heads
+        self.spc_head_lst = config.spc_head_lst
         # Adaptive Normalization
         if config.norm:
             self.norm = RevIN(
@@ -124,6 +129,10 @@ class SPCPatchBert(nn.Module):
                 eps=config.eps, affine=config.affine,
                 dropout_rate=config.hidden_dropout_prob
             )
+            # Preload the weight of norm layer
+            if config.load_norm:
+                self.norm.load_state_dict(torch.load(config.load_norm))
+                print(f"Load norm layer from {config.load_norm}\n")
         else:
             self.norm = None
 
@@ -139,11 +148,34 @@ class SPCPatchBert(nn.Module):
             config.hidden_dropout_prob,
             norm=False,
         )
+        # Preload the weight of embedding layer
+        if config.load_embed:
+            self.embed.load_state_dict(torch.load(config.load_embed))
+            print(f"Load embedding layer from {config.load_embed}\n")
 
-        if config.backbone == "bert":
-            self.encoder = BertEncoder(config)
+        # Ensemble model
+        self.ensemble = config.ensemble
+        if self.ensemble:
+            if config.backbone == "bert":
+                self.encoders = nn.ModuleList(
+                    [BertEncoder(config) for _ in range(config.input_dim)]
+                )
+            else:
+                raise NotImplementedError(
+                    "Other backbones are not implemented.")
+            # Preload the weight of Encoder backbone
+            if config.load_encoder:
+                for i in range(config.input_dim):
+                    self.encoders[i].load_state_dict(
+                        torch.load(config.load_encoder))
+                print(
+                    f"Load {config.input_dim} encoders from {config.load_norm}\n")
         else:
-            raise NotImplementedError("Other backbones are not implemented.")
+            if config.backbone == "bert":
+                self.encoder = BertEncoder(config)
+            else:
+                raise NotImplementedError(
+                    "Other backbones are not implemented.")
 
         self.output_attention = config.output_attention
         self.spc_rule_num = config.spc_rule_num
@@ -152,24 +184,47 @@ class SPCPatchBert(nn.Module):
             self.spc_heads = nn.ModuleList(
                 [nn.Linear(config.hidden_size, i) for i in config.spc_head_lst]
             )
-        self.output_heads = UnPatchify1D(
-            config.individual, config.input_dim,
-            self.hidden_size * self.patchify.patch_num,
-            config.window_size, head_dropout=config.hidden_dropout_prob
-        )
+
+        if self.ensemble:
+            self.output_heads = nn.ModuleList([
+                UnPatchify1DPerFeature(
+                    self.hidden_size * self.patchify.patch_num,
+                    config.window_size, config.hidden_dropout_prob)
+                for _ in range(self.input_dim)
+            ])
+        else:
+            self.output_heads = UnPatchify1D(
+                config.individual, config.input_dim,
+                self.hidden_size * self.patchify.patch_num,
+                config.window_size, head_dropout=config.hidden_dropout_prob
+            )
         self.sigmoid = nn.Sigmoid()
 
     def _forward(
-        self, x: torch.Tensor, mode=0, denorm=True, attn=True
+        self,
+        x: torch.Tensor,
+        mode: int = 0,
+        idx: int = 0,
     ):
-        # Dataflow
-        # x -> RevIN -> Patchify -> position encoding -> token embedding -> Encoder
+        # -----------------------------------
+        # | mode: 0: training mode, 1: validation mode, 2: get representation
+        # | idx: get model[idx]'s output in training mode
+        # -----------------------------------
 
-        # RevIN, out: (batch, seq_len, features_num)
+        # --------------------------------------------------------------------------
+        # |  Dataflow
+        # |  x -> RevIN -> Patchify -> position encoding -> token embedding -> Encoder -> Denorm -> End
+        # |                                                                            -> SPC out
+        # --------------------------------------------------------------------------
+
+        # << RevIN >>
+        # out: (batch, seq_len, features_num)
+        device = x.device
         norm_out = x
         if self.norm:
             norm_out = self.norm(x)
-        # Patchify, out: (batch, features_num, patch_num, patch_len)
+        # << Patchify>>
+        # out: (batch, features_num, patch_num, patch_len)
         out = self.patchify(norm_out)
         # Add a spc token at the first place
         out = F.pad(out, (0, 0, 1, 0), value=0)
@@ -177,49 +232,140 @@ class SPCPatchBert(nn.Module):
         # Because embed & encoder can't deal with 4D shape, reshape the tensor
         out = torch.reshape(
             out, (batch_size * features_num, patch_num, patch_len))
-        # Position encoding & Token embedding,
-        # out: (batch_size * features_num, patch_num, patch_len)
+        # << Position encoding & Token embedding >>
+        # out: (batch_size * features_num, patch_num, hidden_size)
         out = self.embed(out)
-        # Encoder, out: (batch_size, features_num, patch_num, patch_len)
-        encoder_out = self.encoder(out, output_attentions=True)
-        out = encoder_out['last_hidden_state'].reshape(
-            (batch_size, features_num, patch_num, self.hidden_size)
-        )
-        attn = encoder_out['attentions']
 
-        if self.verbose:
-            print(f"encoder_out: {out.shape}, attn: {attn[0].shape}")
-
-        if self.spc_rule_num:
-            # x: x: (batch_size, features_num, patch_num, patch_len)
-            spc_out = out[:, :, 0, :]
-            spc_pred = [
-                self.spc_heads[i](spc_out[:, i]) for i in range(len(self.spc_heads))
-            ]
-            spc_pred = torch.cat(spc_pred, dim=1)
-            spc_pred = self.sigmoid(spc_pred)
-            if self.verbose:
-                print(f"spc_pred: {spc_pred.shape}")
+        # << Encoder >>
+        if self.ensemble:
+            if mode == 0:  # training
+                input_tokens = out.reshape(batch_size, features_num,
+                                           patch_num, self.hidden_size)[:, idx]
+                encoder_out = self.encoders[idx](
+                    input_tokens, output_attentions=True)
+                out = encoder_out["last_hidden_state"]
+                attn = torch.cat(encoder_out['attentions'], dim=0).reshape(
+                    self.num_hidden_layers, batch_size,
+                    self.num_attention_heads, patch_num, patch_num
+                ).mean(axis=(0, 2))
+            elif mode == 1:  # inference, validation, test
+                # Get each features to input in each responsible model
+                input_tokens = out.reshape(batch_size, features_num,
+                                           patch_num, self.hidden_size)
+                # Store all model's output
+                out = torch.zeros(
+                    batch_size, features_num, patch_num, self.hidden_size).to(device)
+                # Store all model's attention output
+                attn = torch.zeros(
+                    batch_size, features_num, patch_num, patch_num)
+                # Store each model's output in "encoder_out", and store attention in "attn"
+                for i in range(self.input_dim):
+                    # input_tokens[:, i]: (batch_size, patch_num, hidden_size)
+                    encoder_out = self.encoders[i](
+                        input_tokens[:, i], output_attentions=True)
+                    out[:, i] = encoder_out['last_hidden_state']
+                    # attention map shape:
+                    # (layers, batch, heads, patch_num, patch_num) ->
+                    # (batch, heads, patch_num, patch_num))
+                    attn_tmp = torch.cat(encoder_out['attentions'], dim=0).reshape(
+                        self.num_hidden_layers, batch_size,
+                        self.num_attention_heads, patch_num, patch_num
+                    ).mean(axis=(0, 2))
+                    attn[:, i] = attn_tmp
+            else:  # get representation
+                pass
         else:
-            spc_out = None
-            spc_pred = None
-        series_out = out[:, :, 1:, :]
-        series_out = self.output_heads(series_out)
-        if self.norm:
-            series_out = self.norm._denormalize(series_out)
+            encoder_out = self.encoder(out, output_attentions=True)
+            out = encoder_out['last_hidden_state'].reshape(
+                (batch_size, features_num, patch_num, self.hidden_size)
+            )
+            attn = torch.cat(encoder_out['attentions'], dim=0).reshape(
+                self.num_hidden_layers, batch_size, features_num,
+                self.num_attention_heads, patch_num, patch_num
+            ).mean(axis=(0, 3))
+
         if self.verbose:
-            print(f"series_out: {series_out.shape}")
+            print(f"encoder_out: {out.shape}, attn: {attn.shape}")
 
-        if mode == 0:  # in training stage and anomaly detection stage
+        # << SPC Heads >>
+        if self.ensemble:
+            if mode == 0:  # training
+                # out: (batch_size, patch_num, hidden_size)
+                spc_out = self.spc_heads[idx](out[:, 0])
+                spc_out = self.sigmoid(spc_out)
+            elif mode == 1:  # inference, validation & test
+                # out: (batch_size, input_dim, patch_num, hidden_size)
+                spc_out = torch.zeros(batch_size, self.spc_rule_num).to(device)
+                start = 0
+                for i in range(self.input_dim):
+                    spc_out[:, start: start + self.spc_head_lst[i]
+                            ] = self.spc_heads[i](out[:, i, 0])
+                    start += self.spc_head_lst[i]
+                spc_out = self.sigmoid(spc_out)
+            else:  # get representation
+                pass
+        else:
+            # x: x: (batch_size, features_num, patch_num, patch_len)
+            tmp_spc_out = out[:, :, 0, :]
+            spc_out = [
+                self.spc_heads[i](tmp_spc_out[:, i]) for i in range(len(self.spc_heads))
+            ]
+            spc_out = torch.cat(spc_out, dim=1)
+            spc_out = self.sigmoid(spc_out)
+        if self.verbose:
+            print(f"spc_out: {spc_out.shape}")
+
+        # << Series Output Heads >>
+        if self.ensemble:
+            if mode == 0:  # training
+                # out: (batch_size, patch_num, hidden_size)
+                # to fit UnPatchify input format
+                # out = out.unsqueeze(1)
+                series_out = self.output_heads[idx](out[:, 1:])
+            elif mode == 1:  # inference, validation & test
+                # out: (batch_size, input_dim, patch_num, hidden_size)
+                series_out = torch.zeros(
+                    batch_size, self.window_size, self.input_dim).to(device)
+                for i in range(self.input_dim):
+                    series_out[:, :, i] = self.output_heads[i](
+                        out[:, i, 1:, :]
+                    )
+            else:  # get representation
+                pass
+        else:
+            series_out = self.output_heads(out[:, :, 1:])
+        if self.verbose:
+            print(f"unpatchified_series_out: {series_out.shape}")
+
+        if self.norm:
+            if (mode == 0) and (self.ensemble):
+                # series_out: (batch_size, window_size) (because only output 1 feature)
+                # To fit denorm input format
+                series_out_tmp = series_out
+                series_out = torch.zeros(
+                    batch_size, self.window_size, self.input_dim).to(device)
+                series_out[:, :, idx] = series_out_tmp
+                # series_out: (batch_size, self.window_size, self.input_dim)
+                series_out = self.norm._denormalize(series_out)[:, :, idx]
+            else:
+                series_out = self.norm._denormalize(series_out)
+        if self.verbose:
+            print(f"denormed_series_out: {series_out.shape}")
+
+        # << Final Output Stage >>
+        if (mode == 0) or (mode == 1):  # training & inference
             if self.output_attention:
-                return attn, norm_out, spc_pred, series_out
-
-            return norm_out, spc_pred, series_out
+                return attn, norm_out, spc_out, series_out
+            else:
+                return norm_out, spc_out, series_out
         else:  # get representation
             return spc_out, attn
 
-    def forward(self, x: torch.Tensor, denorm=True):
-        return self._forward(x, mode=0, denorm=denorm, attn=self.output_attention)
+    def forward(self, x: torch.Tensor, val: bool = False, idx: int = 0):
+        if val:
+            return self._forward(x, mode=1)
+        else:
+            return self._forward(x, mode=0, idx=idx)
 
     def get_representation(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError(
@@ -234,6 +380,7 @@ class SPCPatchBert(nn.Module):
 
 if __name__ == "__main__":
     origin, green = "\033[0m", "\033[32m"
+    red_background = "\033[41m"
 
     def parse() -> argparse.Namespace:
         parser = argparse.ArgumentParser()
@@ -249,22 +396,23 @@ if __name__ == "__main__":
         parser.add_argument('--hidden_size', type=int, default=128)
         parser.add_argument('--num_hidden_layers', type=int, default=8)
         parser.add_argument('--num_attention_heads', type=int, default=8)
-        parser.add_argument('--attention_probs_dropout', type=int, default=0.1)
+        parser.add_argument('--attention_probs_dropout',
+                            type=int, default=0.1)
         parser.add_argument('--hidden_dropout_prob', type=int, default=0.1)
         parser.add_argument('--output_attention', type=int, default=1)
         parser.add_argument('--norm', type=int, default=1)
-        parser.add_argument('--spc_rule_num', type=int, default=1)
         parser.add_argument('--patch_len', type=int, default=16)
         parser.add_argument('--stride', type=int, default=4)
         parser.add_argument('--patch_padding', type=int, default=1)
+        parser.add_argument('--ensemble', type=int, default=1)
         parser.add_argument('--verbose', type=int, default=0)
         args = parser.parse_args()
         args.spc_head_lst = [2, 3, 3, 4, 2, 2, 1, 2, 3, 2]
+        args.spc_rule_num = sum(args.spc_head_lst)
 
         print('=' * 70)
         for key, value in vars(args).items():
             print(f'{key}: {value}')
-        print(f"spc_rule_num: {sum(args.spc_head_lst)}")
         print('=' * 70)
 
         return args
@@ -333,19 +481,30 @@ if __name__ == "__main__":
             patch_len=args.patch_len,
             stride=args.stride,
             spc_head_lst=args.spc_head_lst,
+            ensemble=args.ensemble,
             verbose=args.verbose,
         )
         model = SPCPatchBert(config)
 
         # test on cpu
         x = torch.rand(args.batch_size, args.window_size, args.input_dim)
-        attn, norm_out, spc_pred, series_out = model(x)
+        if args.verbose:
+            print(f"{red_background}Test inference flow...{origin}")
+        attn, norm_out, spc_out, series_out = model(x, val=True)
+        if args.verbose:
+            print(f"{red_background}Test training flow...{origin}")
+        attn, norm_out, spc_out, series_out = model(x, val=False, idx=2)
         print(f"{green}{args.target} pass the test on cpu{origin}")
 
         # test on gpu
         x = x.cuda()
         model = model.cuda()
-        attn, norm_out, spc_pred, series_out = model(x)
+        if args.verbose:
+            print(f"{red_background}Test inference flow...{origin}")
+        attn, norm_out, spc_out, series_out = model(x, val=True)
+        if args.verbose:
+            print(f"{red_background}Test training flow...{origin}")
+        attn, norm_out, spc_out, series_out = model(x, val=False, idx=2)
         print(f"{green}{args.target} pass the test on gpu{origin}")
 
     def main():

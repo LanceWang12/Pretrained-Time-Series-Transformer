@@ -45,7 +45,6 @@ class TSRunner(_BaseRunner):
         self.optimizer = optimizer
         self.mse = nn.MSELoss()
         self.bce = nn.BCELoss()
-        # self.kl = nn.KLDivLoss(reduction="batchmean", log_target=True)
         self.model_ckpt = model_ckpt
         self.config = config
 
@@ -106,6 +105,12 @@ class TSRunner(_BaseRunner):
         epoch_length = len(str(epochs))
         for epoch in range(epochs):
             self.net.train()
+            if self.config.load_norm:  # fixed the weight in norm layer
+                for _, param in self.net.norm.named_parameters():
+                    param.requires_grad = False
+            if self.config.load_embed:  # fixed the weight in embedding layer
+                for _, param in self.net.embed.named_parameters():
+                    param.requires_grad = False
             for i, (x, x_pad, spc, y) in enumerate(train_loader):
                 loss = self._train_step(x, x_pad, spc, y, val=False)
 
@@ -170,7 +175,7 @@ class TSRunner(_BaseRunner):
             # x: [batch, seq, dim], y: [batch, seq]
             x, x_pad, y = x.to(self.device), x_pad.to(
                 self.device), y.to(self.device)
-            _, norm_out, spc_pred, series_out = self.net(x_pad, denorm=True)
+            _, norm_out, spc_pred, series_out = self.net(x_pad)
             errors = (series_out - x)**2
             # errors = (series_out - norm_out)**2
             for j in range(len(spc_pred)):
@@ -213,7 +218,7 @@ class TSRunner(_BaseRunner):
 
             #  <model prediction>
             # series_out.shape = (batch, seq_len, input_dim)
-            _, norm_out, spc_pred, series_out = self.net(x_pad, denorm=True)
+            _, norm_out, spc_pred, series_out = self.net(x_pad)
             # errs.shape = (batch, seq_len)
             errs = torch.mean((series_out - x)**2, dim=2)
             # errs = torch.mean((series_out - norm_out)**2, dim=2)

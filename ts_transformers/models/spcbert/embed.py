@@ -1,3 +1,4 @@
+from collections import OrderedDict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -213,13 +214,10 @@ class UnPatchify1D(nn.Module):
         self.n_vars = n_vars
 
         if self.individual:
-            self.linears = nn.ModuleList()
-            self.dropouts = nn.ModuleList()
-            self.flattens = nn.ModuleList()
-            for i in range(self.n_vars):
-                self.flattens.append(nn.Flatten(start_dim=-2))
-                self.linears.append(nn.Linear(nf, target_window))
-                self.dropouts.append(nn.Dropout(head_dropout))
+            self.unpatchify_lst = nn.ModuleList([
+                UnPatchify1DPerFeature(nf, target_window, head_dropout)
+                for _ in range(n_vars)
+            ])
         else:
             self.flatten = nn.Flatten(start_dim=-2)
             self.linear = nn.Linear(nf, target_window)
@@ -230,11 +228,7 @@ class UnPatchify1D(nn.Module):
         if self.individual:
             x_out = []
             for i in range(self.n_vars):
-                # z: [bs x d_model * patch_num]
-                z = self.flattens[i](x[:, i, :, :])
-                # z: [bs x target_window]
-                z = self.linears[i](z)
-                z = self.dropouts[i](z)
+                z = self.unpatchify_lst[i](x[:, i, :, :])
                 x_out.append(z)
             # x: [bs x nvars x target_window]
             x = torch.stack(x_out, dim=1)
@@ -244,6 +238,32 @@ class UnPatchify1D(nn.Module):
             x = self.dropout(x)
         x = x.permute(0, 2, 1)
         return x
+
+
+class UnPatchify1DPerFeature(nn.Module):
+    def __init__(
+        self,
+        nf: int,
+        window_size: int = 256,
+        dropout: float = 0.,
+    ):
+        super().__init__()
+        # self.unpatch = nn.Sequential(OrderedDict([
+        #     ("flatten", nn.Flatten(start_dim=-2)),
+        #     ("linear", nn.Linear(hidden_size, window_size)),
+        #     ("unpatchify_dropout", nn.Dropout(dropout))
+        # ]))
+        self.flatten = nn.Flatten(start_dim=-2)
+        self.project = nn.Linear(nf, window_size)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x):
+        # print(f"In: {x.shape}")
+        out = self.flatten(x)
+        out = self.project(out)
+        out = self.drop(out)
+        # print(f"Out: {out.shape}")
+        return out
 
 
 if __name__ == "__main__":

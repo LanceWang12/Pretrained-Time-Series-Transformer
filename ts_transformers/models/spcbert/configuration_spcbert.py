@@ -20,6 +20,9 @@ class SPCBertConfig(BertConfig):
         mode: str = "full",
         sensitive_level: int = 0,
         alpha: float = 0.5,
+        load_norm: str = "",
+        load_embed: str = "",
+        load_encoder: str = "",
 
         # for patch version
         window_size: int = 256,
@@ -27,6 +30,9 @@ class SPCBertConfig(BertConfig):
         stride: int = 1,
         padding_patch: bool = True,
         individual: bool = False,
+
+        # ensemble
+        ensemble: bool = True,
         ** kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -44,6 +50,9 @@ class SPCBertConfig(BertConfig):
         self.norm = norm
         self.eps = eps
         self.affine = affine
+        self.load_norm = load_norm
+        self.load_embed = load_embed
+        self.load_encoder = load_encoder
 
         self.mode = mode
         self.sensitive_level = sensitive_level
@@ -56,3 +65,6 @@ class SPCBertConfig(BertConfig):
         self.stride = stride
         self.padding_patch = padding_patch
         self.individual = individual
+
+        # Each feature has its own BERT
+        self.ensemble = ensemble
