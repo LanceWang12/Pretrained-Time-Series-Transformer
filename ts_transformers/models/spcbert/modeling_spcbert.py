@@ -46,6 +46,18 @@ class SPCBERTOutput():
         self.record["out"] = out
         self.record["denorm_out"] = denorm_out
 
+def fuzzy_output(obs: float, d1: float = 3, d2: float = 5):
+    normal, anomaly = 0, 0
+    if obs <= d1:
+        normal = 1
+        anomaly = 0
+    elif obs > d1 and obs <= d2:
+        normal = (obs - d2) / (d1 - d2)
+        anomaly = (obs - d1) / (d2 - d1)
+    else:
+        normal = 0
+        anomaly = 1
+    return normal, anomaly
 
 class SPCBert(nn.Module):
     def __init__(self, config: SPCBertConfig) -> None:
