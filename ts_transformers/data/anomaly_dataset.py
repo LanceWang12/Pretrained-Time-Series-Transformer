@@ -70,7 +70,7 @@ class SPCAnomalyDataset(Dataset):
         self.window_size = config.window_size
         self.time_idx = config.time_idx
         self.padding = config.padding
-        if self.time_idx is not None:
+        if self.time_idx:
             self.time_stamp = data[self.time_idx]
             self.X = torch.as_tensor(np.asarray(
                 data.drop(columns=[config.time_idx, config.target_col])),
@@ -103,20 +103,20 @@ class SPCAnomalyDataset(Dataset):
         else:
             y = self.Y[idx + self.window_size]
 
-        if self.time_idx is not None:
-            t = self.time_stamp[idx:idx + self.window_size]
-            return x, x_pad, spc, t, y
-        else:
-            return x, x_pad, spc, y
+        # if self.time_idx is not None:
+        #     t = self.time_stamp[idx:idx + self.window_size]
+        #     return x, x_pad, spc, t, y
+        # else:
+        return x, x_pad, spc, y
 
     def __len__(self) -> int:
         return len(self.X) - self.window_size
 
 
 def get_loader(
-    config: TSAnomalyConfig,
+    config: SPCAnomalyConfig,
     flag: str = "DMDS",
-) -> Tuple[DataLoader, DataLoader, DataLoader]:
+) -> Tuple[DataLoader, DataLoader, DataLoader, DataLoader]:
     if flag == "DMDS":
         csv_dir = "data/DMDS/csv_fe/"
         train_df = pd.read_csv(csv_dir + "30102001_spc_label.csv")
@@ -167,6 +167,39 @@ def get_loader(
                                num_workers=config.num_workers)
 
     return trainloader, valloader, thresloader, testloader
+
+
+def get_pattern_matching_loader(
+    config: SPCAnomalyConfig,
+    flag: str = "DMDS",
+) -> Tuple[DataLoader, DataLoader]:
+    csv_dir = "data/DMDS/csv_fe"
+    df = pd.read_csv(
+        f"{csv_dir}/09112001_spc_label_user_added.csv")
+    val_df = df[0: 7500]
+    test_df = df[12000:]
+    # config.output_every_anomaly_label = True
+    valset = SPCAnomalyDataset(val_df, config)
+    testset = SPCAnomalyDataset(test_df, config)
+
+    if config.echo:
+        print()
+        print("-" * 25)
+        print(f"Valset size: {len(valset)}")
+        print(f"Testset size: {len(testset)}")
+        print("-" * 25)
+        print()
+
+    valloader = load_data(valset,
+                          batch_size=config.batch_size,
+                          shuffle=True,
+                          num_workers=config.num_workers)
+    testloader = load_data(testset,
+                           batch_size=config.batch_size,
+                           shuffle=True,
+                           num_workers=config.num_workers)
+
+    return valloader, testloader
 
 
 def load_data(dataset: Any,

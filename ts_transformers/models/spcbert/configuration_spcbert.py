@@ -33,6 +33,10 @@ class SPCBertConfig(BertConfig):
 
         # ensemble
         ensemble: bool = True,
+
+        # pattern matching
+        target_features_idx: list = [],
+        top_k_report: int = 600,
         ** kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -68,3 +72,7 @@ class SPCBertConfig(BertConfig):
 
         # Each feature has its own BERT
         self.ensemble = ensemble
+
+        # pattern matching
+        self.target_features_idx = target_features_idx
+        self.top_k_report = top_k_report
