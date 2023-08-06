@@ -204,6 +204,7 @@ class SPCPatchBert(nn.Module):
         self,
         x: torch.Tensor,
         mode: int = 0,
+        idx_lst: list = [],
     ):
         # -----------------------------------
         # | mode: 0: training mode, validation mode, 2: get representation
@@ -236,16 +237,16 @@ class SPCPatchBert(nn.Module):
 
         # << Encoder >>
         if self.ensemble:
+            # Get each features to input in each responsible model
+            input_tokens = out.reshape(batch_size, features_num,
+                                       patch_num, self.hidden_size)
             if mode == 0:  # training, inference, validation, test
-                # Get each features to input in each responsible model
-                input_tokens = out.reshape(batch_size, features_num,
-                                           patch_num, self.hidden_size)
                 # Store all model's output
                 out = torch.zeros(
                     batch_size, features_num, patch_num, self.hidden_size).to(device)
                 # Store all model's attention output
                 attn = torch.zeros(
-                    batch_size, features_num, patch_num, patch_num)
+                    batch_size, features_num, patch_num, patch_num).to(device)
                 # Store each model's output in "encoder_out", and store attention in "attn"
                 for i in range(self.input_dim):
                     # input_tokens[:, i]: (batch_size, patch_num, hidden_size)
@@ -261,7 +262,18 @@ class SPCPatchBert(nn.Module):
                     ).mean(axis=(0, 2))
                     attn[:, i] = attn_tmp
             else:  # get representation
-                pass
+                # Store the model's attention output in idx_lst
+                idx_lst_len = len(idx_lst)
+                attn = torch.zeros(
+                    batch_size, idx_lst_len, patch_num, patch_num).to(device)
+                for i, idx in enumerate(idx_lst):
+                    encoder_out = self.encoders[idx](
+                        input_tokens[:, idx], output_attentions=True)
+                    attn_tmp = torch.cat(encoder_out['attentions'], dim=0).reshape(
+                        self.num_hidden_layers, batch_size,
+                        self.num_attention_heads, patch_num, patch_num
+                    ).mean(axis=(0, 2))
+                    attn[:, i] = attn_tmp
         else:
             encoder_out = self.encoder(out, output_attentions=True)
             out = encoder_out['last_hidden_state'].reshape(
@@ -273,7 +285,10 @@ class SPCPatchBert(nn.Module):
             ).mean(axis=(0, 3))
 
         if self.verbose:
-            print(f"encoder_out: {out.shape}, attn: {attn.shape}")
+            if mode == 1:
+                print(f"attn: {attn.shape}")
+            else:
+                print(f"encoder_out: {out.shape}, attn: {attn.shape}")
 
         # << SPC Heads >>
         if self.ensemble:
@@ -287,7 +302,7 @@ class SPCPatchBert(nn.Module):
                     start += self.spc_head_lst[i]
                 spc_out = self.sigmoid(spc_out)
             else:  # get representation
-                pass
+                spc_out = None
         else:
             # x: x: (batch_size, features_num, patch_num, patch_len)
             tmp_spc_out = out[:, :, 0, :]
@@ -296,7 +311,7 @@ class SPCPatchBert(nn.Module):
             ]
             spc_out = torch.cat(spc_out, dim=1)
             spc_out = self.sigmoid(spc_out)
-        if self.verbose:
+        if (spc_out is not None) and self.verbose:
             print(f"spc_out: {spc_out.shape}")
 
         # << Series Output Heads >>
@@ -310,15 +325,15 @@ class SPCPatchBert(nn.Module):
                         out[:, i, 1:, :]
                     )
             else:  # get representation
-                pass
+                series_out = None
         else:
             series_out = self.output_heads(out[:, :, 1:])
-        if self.verbose:
+        if (series_out is not None) and self.verbose:
             print(f"unpatchified_series_out: {series_out.shape}")
 
-        if self.norm:
+        if (series_out is not None) and self.norm:
             series_out = self.norm._denormalize(series_out)
-        if self.verbose:
+        if (series_out is not None) and self.verbose:
             print(f"denormed_series_out: {series_out.shape}")
 
         # << Final Output Stage >>
@@ -328,20 +343,17 @@ class SPCPatchBert(nn.Module):
             else:
                 return norm_out, spc_out, series_out
         else:  # get representation
-            return spc_out, attn
+            return attn  # spc_out, attn
 
     def forward(self, x: torch.Tensor):
         return self._forward(x, mode=0)
 
-    def get_representation(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        raise NotImplementedError(
-            "Function: get_representation is not implemented!"
-        )
-        spc_representation, attn = self._forward(x, mode=1)
-        attn = torch.cat(attn, axis=0)
-        attn_map = torch.mean(attn, axis=(0, 1))[:, 0]
-        spc_representation = torch.mean(spc_representation, axis=0)
-        return spc_representation, attn_map
+    # -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_representation(self, x: torch.Tensor, idx_lst: list) -> torch.Tensor:
+        attn = self._forward(x, mode=1, idx_lst=idx_lst)
+
+        return attn
+        # return spc_representation, attn_map
 
 
 if __name__ == "__main__":
@@ -465,6 +477,12 @@ if __name__ == "__main__":
         if args.verbose:
             print(f"{red_background}Test inference flow...{origin}")
         attn, norm_out, spc_out, series_out = model(x)
+        idx_lst = [1, 3, 5]
+        if args.verbose:
+            print(f"{red_background}Test representation flow...{origin}")
+            print(
+                f"Getting representations from features: {idx_lst}")
+        attn = model.get_representation(x, idx_lst)
         print(f"{green}{args.target} pass the test on cpu{origin}")
 
         # test on gpu
@@ -473,6 +491,12 @@ if __name__ == "__main__":
         if args.verbose:
             print(f"{red_background}Test inference flow...{origin}")
         attn, norm_out, spc_out, series_out = model(x)
+        if args.verbose:
+            print(f"{red_background}Test representation flow...{origin}")
+            print(
+                f"Getting representations from features: {idx_lst}")
+        idx_lst = [1, 3, 5]
+        attn = model.get_representation(x, idx_lst)
         print(f"{green}{args.target} pass the test on gpu{origin}")
 
     def main():

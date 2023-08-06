@@ -33,7 +33,7 @@ class TSRunner(_BaseRunner):
                  net,
                  config: SPCBertConfig,
                  optimizer: optim.Optimizer,
-                 model_ckpt: Optional[Callable] = None,
+                 model_ckpt=None,
                  device: str = 'cuda') -> None:
         super().__init__(device=device)
 
@@ -188,7 +188,6 @@ class TSRunner(_BaseRunner):
                          len(thres_loader), newline=True)
         err_record = torch.cat(err_record, dim=0)  # [anomalies_num, dim]
 
-        # 這裡以後要實現加權平均
         err_record = torch.mean(err_record, dim=1)  # [anomalies_num,]
         self.threshold_mean = torch.mean(err_record)
         self.threshold_std = torch.std(err_record)
@@ -203,8 +202,8 @@ class TSRunner(_BaseRunner):
     @torch.no_grad()
     def test(self, test_loader: DataLoader):
         self.net.eval()
-        real_threshold = self.threshold_mean + \
-            self.config.sensitive_level * self.threshold_std
+        d1 = self.threshold_mean + self.config.sensitive_level * 0.5 * self.threshold_std
+        d2 = self.threshold_mean + self.config.sensitive_level * self.threshold_std
         preds = []
         ground_truth = []
         spc_preds = []
@@ -221,11 +220,14 @@ class TSRunner(_BaseRunner):
             _, norm_out, spc_pred, series_out = self.net(x_pad)
             # errs.shape = (batch, seq_len)
             errs = torch.mean((series_out - x)**2, dim=2)
-            # errs = torch.mean((series_out - norm_out)**2, dim=2)
-            # (batch, seq_len) -> (batch,)
-            pred = torch.sum((errs > real_threshold), dim=1)
+            # (batch, seq_len, features) -> (batch, seq_len)
+            # pred = torch.sum((errs > real_threshold), dim=1)
+
+            # Fuzzify binary output
+            pred = self.fuzzy_output(errs, d1, d2)
             # pred.shape = (batch,)
-            pred = pred > 0
+            pred = torch.sum(pred > 0.5, dim=1)  # 機率大於 0.5 算 anomaly
+            pred = pred > 1
             preds.append(pred)
             spc_preds.append(spc_pred)
 
@@ -267,6 +269,112 @@ class TSRunner(_BaseRunner):
             spc_report.append((precision, recall, f1))
 
         return anomaly_report, spc_report
+
+    def fuzzy_output(self, obs: torch.tensor, d1: torch.tensor, d2: torch.tensor):
+        out = torch.zeros_like(obs).to(obs.device)
+        # out[obs <= d1] = 0
+        target = torch.logical_and(obs > d1, obs <= d2)
+        out[target] = (obs[target] - d1) / (d2 - d1)
+        out[obs > d2] = 1
+        # if obs <= d1:
+        #     normal = torch.ones_like(obs)
+        #     anomaly = torch.zeros_like(obs)
+        # elif obs > d1 and obs <= d2:
+        #     normal = (obs - d2) / (d1 - d2)
+        #     anomaly = (obs - d1) / (d2 - d1)
+        # else:
+        #     normal = torch.zeros_like(obs)
+        #     anomaly = torch.ones_like(obs)
+        return out
+
+    @torch.no_grad()
+    def get_pattern_attn(self, test_loader: DataLoader):
+        self.net.eval()
+        attn_record = []
+        print()
+        print('-' * 55)
+        start = time.time()
+        prefix = "Get attention map from val loader"
+        postfix = ""
+        for i, (x, x_pad, _, y) in enumerate(test_loader):
+            # x: [batch, seq, dim], y: [batch, seq]
+            x, x_pad, y = x.to(self.device), x_pad.to(
+                self.device), y.to(self.device)
+            attn = self.net.get_representation(
+                x_pad, idx_lst=self.config.target_features_idx)
+            attn = attn[y == 1]
+            attn_record.append(attn)
+
+            ProgressBar.show(prefix, postfix, i, len(test_loader))
+        ProgressBar.show(prefix, postfix, len(test_loader),
+                         len(test_loader), newline=True)
+        # [anomalies_num, patch_num, patch_num]
+        attn_record = torch.cat(attn_record, dim=0)
+
+        # 這裡以後要實現加權平均
+        self.attn_mean = attn_record.mean(dim=0).unsqueeze(0)
+        self.attn_std = attn_record.std(dim=0).unsqueeze(0)
+        end = time.time()
+        duration = end - start
+        print(f"Get attention map in {duration:.2f}sec.")
+        print(self.attn_mean.shape)
+        print('-' * 55)
+        print()
+
+    @torch.no_grad()
+    # -> Tuple[np.ndarray, float]:
+    def test_pattern_matching(self, test_loader: DataLoader):
+        self.net.eval()
+        preds_record = []
+        gt_record = []
+        print('*' * 60)
+        prefix = f"Test Pattern Matching, produce top-{self.config.top_k_report} report"
+        postfix = ""
+        length = len(self.config.target_features_idx)
+        seq_len_square = (self.net.patchify.patch_num + 1)**2
+        for i, (x, x_pad, spc_label, y) in enumerate(test_loader):
+            x, x_pad, spc_label, y = x.to(self.device), x_pad.to(
+                self.device), spc_label.to(self.device), y.to(self.device)
+
+            #  <model prediction>
+            # series_out.shape = (batch, seq_len, input_dim)
+            attn = self.net.get_representation(
+                x_pad, idx_lst=self.config.target_features_idx)
+            # errs.shape = (batch,)
+            # print(attn.shape, self.attn_mean.shape)
+            errs = torch.sqrt((attn - self.attn_mean)**2)
+            # print("haha", errs.shape)
+            errs = errs > (self.config.sensitive_level * self.attn_std)
+            errs = torch.sum(errs, dim=(1, 2, 3))
+            errs = errs > length * seq_len_square
+            preds_record.append(errs)
+            gt_record.append(y)
+            ProgressBar.show(prefix, postfix, i, len(test_loader))
+        ProgressBar.show(prefix, postfix, len(test_loader),
+                         len(test_loader), newline=True)
+
+        preds = torch.cat(preds_record).detach().cpu().numpy()
+        ground_truth = torch.cat(gt_record).detach().cpu().numpy()
+        report = classification_report(ground_truth, preds, zero_division=0)
+        # Anomaly detection report
+        # preds = torch.cat(errs_record).detach().cpu().numpy()
+        # ground_truth = torch.cat(gt_record).detach().cpu().numpy()
+        # # print(preds.shape)
+        # # exit(1)
+        # idx = np.argsort(preds)
+        # # ground_truth[ground_truth == 1]
+        # ans = ground_truth[idx[: self.config.top_k_report]]
+        # print(ans)
+        # top_k_acc = sum(ans) / len(ans)
+
+        self.history.reset()
+        print()
+        # print(f"Top k accuracy: {top_k_acc * 100:.3f}")
+        print(report)
+        print('*' * 60)
+
+        return report
+        # return ans, top_k_acc
 
     @property
     @torch.no_grad()
