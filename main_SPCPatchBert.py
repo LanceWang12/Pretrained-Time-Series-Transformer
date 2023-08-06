@@ -53,8 +53,8 @@ def parse() -> argparse.Namespace:
     parser.add_argument('--stride', type=int, default=8)
     parser.add_argument('--patch_padding', type=int, default=1)
     parser.add_argument('--ensemble', type=int, default=1)
-    # DMDS: 20, SWaT:
-    parser.add_argument('--sensitive_level', type=float, default=1)
+    parser.add_argument('--sensitive_level', type=float,
+                        default=20)  # (mean + 15std, mean + 20std)
     parser.add_argument('--alpha', type=float, default=0.5)
     parser.add_argument('--load_norm', type=str, default="")
     parser.add_argument('--load_embed', type=str, default="")
