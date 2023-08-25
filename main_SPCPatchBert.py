@@ -68,6 +68,7 @@ def parse() -> argparse.Namespace:
         # Force to set val_idx = 57030
         #          set testset as 09112001.csv
         args.val_idx = 57030
+        # We need to point where are spc columns
         args.spc_col = [
             'LC51_03CV_rule1', 'LC51_03CV_rule3', 'LC51_03CV_rule4',
             'LC51_03CV_rule5', 'LC51_03CV_rule6', 'LC51_03X_rule1',
@@ -91,6 +92,7 @@ def parse() -> argparse.Namespace:
             'LC74_20PV_rule3', 'LC74_20PV_rule4', 'LC74_20PV_rule5',
             'LC74_20PV_rule6'
         ]
+        # define each spc label classifier have n head
         args.spc_head_lst = [5, 5, 6, 5, 2, 5, 4, 6, 3, 4, 4, 6, 6, 6, 6]
         args.spc_rule_num = len(args.spc_col)
         # args.sensitive_level = 20
@@ -118,9 +120,10 @@ def main() -> None:
     args = parse()
     fix_seed()
     # -------- Prepare dataloader --------
+    # Define data config
     data_config = SPCAnomalyConfig(
-        spc_col=args.spc_col,
-        target_col="anomaly_label",
+        spc_col=args.spc_col,  # !!! define spc columns name !!!
+        target_col="anomaly_label",  # !!! define anomaly label column !!!
         time_idx=None,
         window_size=args.window_size,
         batch_size=args.batch_size,
@@ -133,7 +136,7 @@ def main() -> None:
     train_loader, val_loader, thres_loader, test_loader = get_loader(
         data_config, args.task)
 
-    # seq_len = original_seq_len + a spc token
+    # Define model config
     model_config = SPCBertConfig(
         input_dim=args.input_dim,
         output_dim=args.input_dim,
